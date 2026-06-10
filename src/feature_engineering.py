@@ -22,10 +22,12 @@ def create_rolling_features(df, target_col='Appliances', windows=[6, 18]):
     """
     Creates rolling window features (mean, std, min, max) for specified window sizes.
     Default windows=[6, 18] assume a 10-minute sampling rate (6 -> 1 hour, 18 -> 3 hours).
+    Includes .shift(1) to prevent target data leakage.
     """
     df_feat = df.copy()
     for window in windows:
-        rol = df_feat[target_col].rolling(window=window)
+        rol = df_feat[target_col].shift(1).rolling(window=window)
+        
         df_feat[f'{target_col}_rolling_mean_{window}'] = rol.mean()
         df_feat[f'{target_col}_rolling_std_{window}'] = rol.std()
         df_feat[f'{target_col}_rolling_min_{window}'] = rol.min()
@@ -63,16 +65,28 @@ def determine_optimal_lags(series, max_lag=72, threshold=0.2):
     suggested = strong.index.tolist()
     return suggested
 
-def create_interaction_features(df):
-    """Creates interaction terms between key environmental features."""
+def create_interaction_features(df, target_col='Appliances', lag_for_interaction=1):
+    """Creates interaction terms between key environmental features.
+    """
     df_feat = df.copy()
+    # interaction between outdoor temp and humidity is safe
     if 'T_out' in df_feat.columns and 'RH_out' in df_feat.columns:
         df_feat['T_out_RH_out_interact'] = df_feat['T_out'] * df_feat['RH_out']
-    # additional interactions commonly useful for energy prediction
-    if 'T_out' in df_feat.columns and 'Appliances' in df_feat.columns:
-        df_feat['T_out_Appliances_interact'] = df_feat['T_out'] * df_feat['Appliances']
-    if 'RH_out' in df_feat.columns and 'Appliances' in df_feat.columns:
-        df_feat['RH_out_Appliances_interact'] = df_feat['RH_out'] * df_feat['Appliances']
+
+    # Use a lagged target for any interactions with the target to avoid leakage
+    lag_col = f"{target_col}_lag_{lag_for_interaction}"
+    if lag_col in df_feat.columns:
+        if 'T_out' in df_feat.columns:
+            df_feat[f'T_out_{target_col}_lag{lag_for_interaction}_interact'] = (
+                df_feat['T_out'] * df_feat[lag_col]
+            )
+        if 'RH_out' in df_feat.columns:
+            df_feat[f'RH_out_{target_col}_lag{lag_for_interaction}_interact'] = (
+                df_feat['RH_out'] * df_feat[lag_col]
+            )
+    else:
+        pass
+
     return df_feat
 
 
