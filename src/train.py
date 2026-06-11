@@ -7,13 +7,14 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error, r2_score
+import matplotlib.subplots as subplots
 import matplotlib.pyplot as plt
 import copy
 import random
 import os
 
-# Import neural networks from model.py
+# Import the model architectures from model.py
 from model import EnergyLSTM, TunedLSTM
 
 # Set device for PyTorch
@@ -21,16 +22,21 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 def evaluate_model(y_true, y_pred, model_name):
-    """Calculates and prints MAE and RMSE."""
+    """Calculates and prints MAE, RMSE, MAPE, and R2."""
     mae = mean_absolute_error(y_true, y_pred)
     rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+    mape = mean_absolute_percentage_error(y_true, y_pred)
+    r2 = r2_score(y_true, y_pred)
+
     print(f"{model_name} Performance")
     print(f"MAE:  {mae:.4f}")
-    print(f"RMSE: {rmse:.4f}\n")
-    return mae, rmse
+    print(f"RMSE: {rmse:.4f}")
+    print(f"MAPE: {mape:.4f}")
+    print(f"R2:   {r2:.4f}\n")
+    return mae, rmse, mape, r2
 
 # Load Data
-data_path = 'data\processed\train_ready_data.csv'
+data_path = 'train_ready_data.csv'
 df = pd.read_csv(data_path)
 
 # Separate Features and Target
@@ -43,21 +49,21 @@ X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle
 print(f"Training set: {X_train.shape[0]} samples")
 print(f"Testing set: {X_test.shape[0]} samples")
 
-print('Baseline Models')
+print('\nBaseline Models')
 
 # Linear Regression
 lr_model = LinearRegression()
 lr_model.fit(X_train, y_train)
 lr_preds = lr_model.predict(X_test)
-lr_mae, lr_rmse = evaluate_model(y_test, lr_preds, 'Linear Regression')
+lr_mae, lr_rmse, lr_mape, lr_r2 = evaluate_model(y_test, lr_preds, 'Linear Regression')
 
 # Random Forest
 rf_model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
 rf_model.fit(X_train, y_train)
 rf_preds = rf_model.predict(X_test)
-rf_mae, rf_rmse = evaluate_model(y_test, rf_preds, 'Random Forest')
+rf_mae, rf_rmse, rf_mape, rf_r2 = evaluate_model(y_test, rf_preds, 'Random Forest')
 
-print('LSTM Model Training')
+print('\nLSTM Model Training')
 
 # Prepare data for LSTM
 X_train_lstm = torch.tensor(X_train.reshape((X_train.shape[0], 1, X_train.shape[1])), dtype=torch.float32).to(device)
@@ -68,7 +74,7 @@ y_test_lstm = torch.tensor(y_test, dtype=torch.float32).view(-1, 1).to(device)
 train_loader = DataLoader(TensorDataset(X_train_lstm, y_train_lstm), batch_size=64, shuffle=False)
 val_loader = DataLoader(TensorDataset(X_test_lstm, y_test_lstm), batch_size=64, shuffle=False)
 
-# Initialize Model from model.py
+# Initialize model from model.py
 model = EnergyLSTM(X_train.shape[1]).to(device)
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -108,11 +114,11 @@ model.eval()
 with torch.no_grad():
     lstm_preds = model(X_test_lstm).cpu().numpy().flatten()
 
-lstm_mae, lstm_rmse = evaluate_model(y_test, lstm_preds, 'LSTM')
+lstm_mae, lstm_rmse, lstm_mape, lstm_r2 = evaluate_model(y_test, lstm_preds, 'LSTM')
 
-# Plotting Initial Results 
 fig, axes = plt.subplots(2, 2, figsize=(15, 12))
 
+# Training & Validation Loss
 axes[0, 0].plot(train_losses, label='Train Loss')
 axes[0, 0].plot(val_losses, label='Val Loss')
 axes[0, 0].set_title('LSTM Training & Validation Loss')
@@ -120,11 +126,13 @@ axes[0, 0].set_xlabel('Epoch')
 axes[0, 0].set_ylabel('MSE')
 axes[0, 0].legend()
 
+# Predicted vs Actual (First 200 samples for clarity)
 axes[0, 1].plot(y_test[:200], label='Actual', alpha=0.7)
 axes[0, 1].plot(lstm_preds[:200], label='Predicted', alpha=0.7)
 axes[0, 1].set_title('Predicted vs Actual (LSTM)')
 axes[0, 1].legend()
 
+# Residual Plot
 residuals = y_test - lstm_preds
 axes[1, 0].scatter(lstm_preds, residuals, alpha=0.3)
 axes[1, 0].axhline(0, color='red', linestyle='--')
@@ -132,16 +140,17 @@ axes[1, 0].set_title('Residual Plot (LSTM)')
 axes[1, 0].set_xlabel('Predicted')
 axes[1, 0].set_ylabel('Residual')
 
-models_list = ['Linear Reg', 'Random Forest', 'LSTM']
-maes_list = [lr_mae, rf_mae, lstm_mae]
-axes[1, 1].bar(models_list, maes_list, color=['blue', 'green', 'orange'])
+# Model Comparison
+models = ['Linear Reg', 'Random Forest', 'LSTM']
+maes = [lr_mae, rf_mae, lstm_mae]
+axes[1, 1].bar(models, maes, color=['blue', 'green', 'orange'])
 axes[1, 1].set_title('Model MAE Comparison')
 axes[1, 1].set_ylabel('MAE')
 
 plt.tight_layout()
 plt.show()
 
-# Hyperparameter Tuning 
+# Helper function for training with early stopping
 def train_with_early_stopping(model, train_loader, val_loader, criterion, optimizer, epochs=50, patience=5):
     best_loss = float('inf')
     patience_counter = 0
@@ -175,17 +184,20 @@ def train_with_early_stopping(model, train_loader, val_loader, criterion, optimi
     model.load_state_dict(best_model_wts)
     return model, best_loss
 
+# Hyperparameter Tuning 
 param_grid = {
     'lr': [0.001, 0.0005],
     'hidden_size': [32, 64, 128],
     'dropout': [0.1, 0.2, 0.3]
 }
 
+val_loader = DataLoader(TensorDataset(X_test_lstm, y_test_lstm), batch_size=64, shuffle=False)
+
 best_val_rmse = float('inf')
 best_params = {}
 best_optimized_model = None
 
-print('\n--- Starting Random Search ---')
+print('\nStarting Random Search...')
 for i in range(5):
     params = {k: random.choice(v) for k, v in param_grid.items()}
     print(f'Trial {i+1}: {params}')
@@ -201,15 +213,13 @@ for i in range(5):
         best_params = params
         best_optimized_model = copy.deepcopy(t_model)
 
-print(f'Best Params Found: {best_params}')
+print(f'\nBest Params Found: {best_params}')
 
-# Get predictions for the optimized model to evaluate it
 best_optimized_model.eval()
 with torch.no_grad():
     opt_preds = best_optimized_model(X_test_lstm).cpu().numpy().flatten()
-    
-print("\n--- Optimized LSTM Performance ---")
-opt_mae, opt_rmse = evaluate_model(y_test, opt_preds, 'Optimized LSTM')
+
+opt_mae, opt_rmse, opt_mape, opt_r2 = evaluate_model(y_test, opt_preds, 'Optimized LSTM')
 
 # Final Comparison Plot
 labels = ['Linear Reg', 'Random Forest', 'Initial LSTM', 'Optimized LSTM']
@@ -234,7 +244,7 @@ def autolabel(rects):
         height = rect.get_height()
         ax.annotate(f'{height:.4f}',
                     xy=(rect.get_x() + rect.get_width() / 2, height),
-                    xytext=(0, 3), 
+                    xytext=(0, 3),
                     textcoords="offset points",
                     ha='center', va='bottom', fontsize=9, fontweight='bold')
 
@@ -244,3 +254,12 @@ autolabel(rects2)
 plt.grid(axis='y', linestyle='--', alpha=0.6)
 plt.tight_layout()
 plt.show()
+
+model_save_path = 'models\optimized_lstm.pth'
+
+# Save the state dictionary of the best model found during hyperparameter tuning
+if best_optimized_model is not None:
+    torch.save(best_optimized_model.state_dict(), model_save_path)
+    print(f"Model successfully saved to {model_save_path}")
+else:
+    print("Error: No optimized model found to save. Please run the tuning cell first.")
